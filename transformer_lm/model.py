@@ -28,10 +28,17 @@ class Linear(nn.Module):
         self, in_features: int, out_features: int, bias: bool = True
     ) -> None:
         super().__init__()
-        raise NotImplementedError("TODO: Implement Linear.__init__()")
+        bound = 1 / math.sqrt(in_features)
+        weight_tensor = torch.empty(out_features, in_features).uniform_(-bound, bound)
+        self.weight = nn.Parameter(weight_tensor)
+        if bias:
+            bias_tensor = torch.zeros(out_features)
+            self.bias = nn.Parameter(bias_tensor)
+        else:
+            self.bias = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError("TODO: Implement Linear.forward()")
+        return x @ self.weight.T + (self.bias if self.bias is not None else 0)
 
 
 class Embedding(nn.Module):
@@ -42,10 +49,12 @@ class Embedding(nn.Module):
 
     def __init__(self, num_embeddings: int, embedding_dim: int) -> None:
         super().__init__()
-        raise NotImplementedError("TODO: Implement Embedding.__init__()")
+        self.weight = nn.Parameter(torch.empty(num_embeddings, embedding_dim))
+        self.weight.data.normal_(0, 0.02)
 
     def forward(self, indices: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError("TODO: Implement Embedding.forward()")
+        embedded = self.weight[indices]
+        return embedded
 
 
 class RMSNorm(nn.Module):
@@ -53,12 +62,11 @@ class RMSNorm(nn.Module):
 
     def __init__(self, d_model: int, eps: float = 1e-5) -> None:
         super().__init__()
-        raise NotImplementedError("TODO: Implement RMSNorm.__init__()")
+        self.eps = eps
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError("TODO: Implement RMSNorm.forward()")
-
-
+        rms = (x ** 2).mean(dim=-1, keepdim=True).add(self.eps).sqrt()
+        return x / rms
 # ---------------------------------------------------------------------------
 # Rotary Position Embeddings (RoPE) — PROVIDED, not student-implemented
 # ---------------------------------------------------------------------------
@@ -144,7 +152,14 @@ def scaled_dot_product_attention(
     Returns:
         ``(B, ..., T, d_v)``
     """
-    raise NotImplementedError("TODO: Implement scaled_dot_product_attention()")
+    d_k = Q.shape[-1]
+    scores = Q @ K.transpose(-2, -1) / math.sqrt(d_k)
+    if mask is not None:
+        mask_scores = scores + mask
+    else:
+        mask_scores = scores
+    weights = softmax(mask_scores, dim=-1)
+    return weights @ V
 
 
 class CausalMultiHeadSelfAttention(nn.Module):
