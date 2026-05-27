@@ -88,14 +88,13 @@ class RotaryPositionEmbedding(nn.Module):
         super().__init__()
         inv_freq = 1.0 / (base ** (torch.arange(0, d_head, 2).float() / d_head))
         self.register_buffer("inv_freq", inv_freq)
-        # Pre-compute for max_seq_len positions
         self._build_cache(max_seq_len)
 
     def _build_cache(self, seq_len: int) -> None:
         t = torch.arange(seq_len, dtype=self.inv_freq.dtype)
-        freqs = torch.outer(t, self.inv_freq)  # (T, d_head/2)
-        cos_cached = torch.cos(freqs)  # (T, d_head/2)
-        sin_cached = torch.sin(freqs)  # (T, d_head/2)
+        freqs = torch.outer(t, self.inv_freq)
+        cos_cached = torch.cos(freqs) 
+        sin_cached = torch.sin(freqs)  
         self.register_buffer("cos_cached", cos_cached, persistent=False)
         self.register_buffer("sin_cached", sin_cached, persistent=False)
 
@@ -118,10 +117,9 @@ class RotaryPositionEmbedding(nn.Module):
             Rotated ``(q, k)`` with the same shapes.
         """
         T = q.shape[2]
-        cos = self.cos_cached[:T].unsqueeze(0).unsqueeze(0)  # (1, 1, T, d_head/2)
+        cos = self.cos_cached[:T].unsqueeze(0).unsqueeze(0)  
         sin = self.sin_cached[:T].unsqueeze(0).unsqueeze(0)
-        # Duplicate cos/sin to full d_head: [cos, cos] for pairs
-        cos = torch.cat([cos, cos], dim=-1)  # (1, 1, T, d_head)
+        cos = torch.cat([cos, cos], dim=-1)  
         sin = torch.cat([sin, sin], dim=-1)
         q_rot = q * cos + self._rotate_half(q) * sin
         k_rot = k * cos + self._rotate_half(k) * sin
@@ -188,7 +186,15 @@ class CausalMultiHeadSelfAttention(nn.Module):
         dropout: float = 0.0,
     ) -> None:
         super().__init__()
-        raise NotImplementedError("TODO: Implement CausalMultiHeadSelfAttention.__init__()")
+        assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
+        assert (d_model // n_heads) % 2 == 0, "d_head must be even (required by RoPE)"
+        self.n_heads = n_heads
+        self.d_model = d_model
+        self.d_head = d_model // n_heads
+        self.qkv_proj = Linear(d_model, 3 * d_model, bias=False)
+        self.o_proj = Linear(d_model, d_model, bias=False)
+        self.rope = RotaryPositionEmbedding(self.d_head)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -197,7 +203,17 @@ class CausalMultiHeadSelfAttention(nn.Module):
         Returns:
             ``(B, T, d_model)``
         """
-        raise NotImplementedError("TODO: Implement CausalMultiHeadSelfAttention.forward()")
+        B, T, _ = x.shape
+        qkv = self.qkv_proj(x)
+        q, k, v = qkv.split(self.d_model, dim=-1)
+        q = q.view(B, T, self.n_heads, self.d_head).transpose(1, 2)
+        k = k.view(B, T, self.n_heads, self.d_head).transpose(1, 2)
+        v = v.view(B, T, self.n_heads, self.d_head).transpose(1, 2)
+        q, k = self.rope(q, k)
+        causal_mask = torch.triu(torch.full((T, T), -1e9, device=x.device), diagonal=1)
+        attn = scaled_dot_product_attention(q, k, v, causal_mask)
+        attn = attn.transpose(1, 2).contiguous().view(B, T, self.d_model)
+        return self.dropout(self.o_proj(attn))
 
 
 # ---------------------------------------------------------------------------
@@ -225,10 +241,12 @@ class FeedForward(nn.Module):
         self, d_model: int, d_ff: int, dropout: float = 0.0,
     ) -> None:
         super().__init__()
-        raise NotImplementedError("TODO: Implement FeedForward.__init__()")
+        self.w_gate = Linear(d_model, d_ff, bias=False)
+        self.w_up = Linear(d_model, d_ff, bias=False)
+        self.w_down = Linear(d_ff, d_model, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError("TODO: Implement FeedForward.forward()")
+        return self.w_down(silu(self.w_gate(x)) * self.w_up(x))
 
 
 # ---------------------------------------------------------------------------
@@ -265,10 +283,15 @@ class TransformerBlock(nn.Module):
         dropout: float = 0.0,
     ) -> None:
         super().__init__()
-        raise NotImplementedError("TODO: Implement TransformerBlock.__init__()")
+        self.ffn = FeedForward(d_model, d_ff, dropout)
+        self.mha = CausalMultiHeadSelfAttention(d_model, n_heads, dropout)
+        self.rms_norm1 = RMSNorm(d_model)
+        self.rms_norm2 = RMSNorm(d_model)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError("TODO: Implement TransformerBlock.forward()")
+        x = x + self.mha(self.rms_norm1(x))
+        x = x + self.ffn(self.rms_norm2(x))
+        return x
 
 
 class TransformerLM(nn.Module):
