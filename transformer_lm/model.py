@@ -283,14 +283,14 @@ class TransformerBlock(nn.Module):
         dropout: float = 0.0,
     ) -> None:
         super().__init__()
-        self.ffn = FeedForward(d_model, d_ff, dropout)
-        self.mha = CausalMultiHeadSelfAttention(d_model, n_heads, dropout)
-        self.rms_norm1 = RMSNorm(d_model)
-        self.rms_norm2 = RMSNorm(d_model)
+        self.ffn = FeedForward(d_model, d_ff)
+        self.attn = CausalMultiHeadSelfAttention(d_model, n_heads)
+        self.ln1 = RMSNorm(d_model)
+        self.ln2 = RMSNorm(d_model)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x + self.mha(self.rms_norm1(x))
-        x = x + self.ffn(self.rms_norm2(x))
+        x = x + self.attn(self.ln1(x))
+        x = x + self.ffn(self.ln2(x))
         return x
 
 
@@ -335,7 +335,16 @@ class TransformerLM(nn.Module):
         dropout: float = 0.0,
     ) -> None:
         super().__init__()
-        raise NotImplementedError("TODO: Implement TransformerLM.__init__()")
+        self.token_emb = Embedding(vocab_size, d_model)
+        self.blocks = nn.ModuleList([TransformerBlock(d_model, n_heads, d_ff, dropout) for _ in range(n_layers)])
+        self.ln_final = RMSNorm(d_model)
+        self.lm_head = Linear(d_model, vocab_size, bias=False)
+        self.context_length = context_length
+        self.lm_head.weight = self.token_emb.weight
+        for block in self.blocks:
+            block.attn.o_proj.weight.data.zero_()
+            block.ffn.w_down.weight.data.zero_()
+
 
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
         """
@@ -344,4 +353,10 @@ class TransformerLM(nn.Module):
         Returns:
             ``(B, T, vocab_size)`` raw logits.
         """
-        raise NotImplementedError("TODO: Implement TransformerLM.forward()")
+        B, T = input_ids.shape
+        assert T <= self.context_length, "Input sequence length must be less than or equal to context length"
+        x = self.token_emb(input_ids)
+        for block in self.blocks:
+            x = block(x)
+        x = self.ln_final(x)
+        return self.lm_head(x)
